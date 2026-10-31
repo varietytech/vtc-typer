@@ -430,9 +430,10 @@ async function cmdRecord(what) {
     const r = await obsRequest(type);
     log(`OBS ${what}${r.outputPath ? ` → ${r.outputPath}` : ""}`);
     writeStatus({ obs: { [what]: true, outputPath: r.outputPath } });
-    if (what === "start") await sleep(1.5);           // a beat of still frame before typing
+    if (what === "start") { await statusBar(false); await sleep(1.5); }   // a beat of still frame before typing
+    if (what === "stop") await statusBar(true);
   } catch (e) {
-    if (what === "stop") { log(`⚠️ ${e.message}`); return; }  // never lose the take over a stop
+    if (what === "stop") { log(`⚠️ ${e.message}`); await statusBar(true); return; }  // never lose the take over a stop
     throw e;
   }
 }
@@ -547,6 +548,20 @@ function parseTake(file) {
     .map((l) => { const i = l.indexOf(" "); return i < 0 ? [l.toLowerCase(), ""] : [l.slice(0, i).toLowerCase(), l.slice(i + 1).trim()]; });
 }
 
+// VS Code features that react to document edits (not just keystrokes) and would change typed code
+const SAFE = { "typescript.autoClosingTags": false, "javascript.autoClosingTags": false, "html.autoClosingTags": false,
+  "editor.linkedEditing": false, "files.eol": "\n", "editor.formatOnType": false, "editor.formatOnPaste": false };
+async function applySafeSettings() {
+  for (const [k, v] of Object.entries(SAFE)) {
+    try { if (vscode.workspace.getConfiguration().get(k) !== v) await vscode.workspace.getConfiguration().update(k, v, vscode.ConfigurationTarget.Workspace); }
+    catch (e) { log(`could not set ${k}: ${e.message}`); }
+  }
+}
+async function statusBar(visible) {
+  try { await vscode.workspace.getConfiguration().update("workbench.statusBar.visible", visible, vscode.ConfigurationTarget.Workspace); }
+  catch (e) { log(`status bar: ${e.message}`); }
+}
+
 async function runTake(file, startAt = 0) {
   let cmds;
   try { ensureDirs(); cmds = parseTake(file); }
@@ -555,6 +570,7 @@ async function runTake(file, startAt = 0) {
   ws = ws || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : null);
   srcRoot = srcRoot || cfg().get("srcRoot");
   log(`▶ take ${path.basename(file)} from step ${startAt + 1} (workspace ${ws})`);
+  if (ws) await applySafeSettings();
   writeStatus();
   let reloading = false;
   try {
@@ -672,6 +688,22 @@ function activate(context) {
       }),
     );
   }
+
+  // self-update: a newer vtc-typer-X.Y.Z.vsix in <channel>/tools/vtc-extension installs itself
+  setTimeout(async () => {
+    try {
+      const dir = path.join(channel(), "tools", "vtc-extension");
+      const mine = context.extension ? context.extension.packageJSON.version : "0.0.0";
+      const ver = (v) => v.split(".").map(Number).reduce((a, x) => a * 1000 + x, 0);
+      const best = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((f) => [f, (f.match(/^vtc-typer-(\d+\.\d+\.\d+)\.vsix$/) || [])[1]])
+        .filter(([, v]) => v && ver(v) > ver(mine)).sort((a, b) => ver(b[1]) - ver(a[1]))[0];
+      if (!best || state.running) return;
+      log(`updating vtc-typer ${mine} -> ${best[1]}`);
+      await vscode.commands.executeCommand("workbench.extensions.installExtension", vscode.Uri.file(path.join(dir, best[0])));
+      log(`installed ${best[1]}: reloading the window`);
+      await vscode.commands.executeCommand("workbench.action.reloadWindow");
+    } catch (e) { log(`self-update failed: ${e.message}`); }
+  }, 6000);
 
   // read-only requests from Claude
   const timer = setInterval(pollRequests, 1500);
