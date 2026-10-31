@@ -307,7 +307,9 @@ async function cmdTerminal(cmd, typeIt = true) {
   await sleep(0.8);
 }
 
-async function cmdWaitDone(timeout = 900) {
+async function cmdWaitDone(arg = "") {
+  const ignore = /ignore/.test(arg);
+  const timeout = parseFloat(arg) || 1200;
   // wait for the last terminal command to finish (shell integration), logs its exit code
   const t0 = Date.now();
   state.label = "waiting for the command to finish";
@@ -316,7 +318,15 @@ async function cmdWaitDone(timeout = 900) {
     const mine = execs.slice(state.execMark || 0);
     if (!mine.length && Date.now() - t0 > 30000) { log("no command start seen after 30s (shell integration off?) — moving on"); return; }
     const last = mine[mine.length - 1];
-    if (last && last.done) { log(`command finished: exit ${last.exit}`); return; }
+    if (last && last.done) {
+      log(`command finished: exit ${last.exit}`);
+      if (last.exit && last.exit !== 0 && !ignore) {
+        const tail = termOut.slice(-12);
+        for (const l of tail) log(`   | ${l}`);
+        throw new Error(`"${last.cmd}" failed (exit ${last.exit}). Last output:\n${tail.join("\n")}`);
+      }
+      return;
+    }
     await sleep(0.5);
   }
   log("gave up waiting for the command");
@@ -370,8 +380,9 @@ function parseTake(file) {
 }
 
 async function runTake(file, startAt = 0) {
-  ensureDirs();
-  const cmds = parseTake(file);
+  let cmds;
+  try { ensureDirs(); cmds = parseTake(file); }
+  catch (e) { log(`✖ could not read take ${file}: ${e.message}`); return; }
   Object.assign(state, { running: true, paused: false, stop: false, take: path.basename(file), step: startAt, total: cmds.length });
   ws = ws || (vscode.workspace.workspaceFolders ? vscode.workspace.workspaceFolders[0].uri.fsPath : null);
   srcRoot = srcRoot || cfg().get("srcRoot");
@@ -397,7 +408,7 @@ async function runTake(file, startAt = 0) {
         case "check": await cmdCheck(arg); break;
         case "terminal": await cmdTerminal(arg, true); break;
         case "run": await cmdTerminal(arg, false); break;
-        case "waitdone": await cmdWaitDone(parseFloat(arg) || 900); break;
+        case "waitdone": await cmdWaitDone(arg); break;
         case "waitout": await cmdWaitOut(arg.replace(/^"|"$/g, "")); break;
         case "waitfor": await cmdWaitFor(arg); break;
         case "wait": await sleep(parseFloat(arg)); break;
@@ -449,7 +460,7 @@ function activate(context) {
       const takes = fs.readdirSync(takesDir()).filter((f) => f.endsWith(".take")).sort();
       if (!takes.length) return vscode.window.showWarningMessage(`No .take files in ${takesDir()}`);
       const pick = await vscode.window.showQuickPick(takes, { placeHolder: "Which take?" });
-      if (pick) runTake(path.join(takesDir(), pick));
+      if (pick) runTake(path.join(takesDir(), pick)).catch((e) => log(`✖ take failed: ${e && e.stack || e}`));
     }),
     vscode.commands.registerCommand("vtc.pause", () => { state.paused = !state.paused; log(state.paused ? "paused" : "resumed"); writeStatus(); }),
     vscode.commands.registerCommand("vtc.stop", () => { state.stop = true; state.paused = false; }),
@@ -466,7 +477,8 @@ function activate(context) {
         try {
           let buf = "";
           for await (const chunk of ev.execution.read()) {
-            buf += chunk.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
+            buf += chunk.replace(/\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)/g, "").replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "")
+              .replace(/\x1b[()][0-9A-Za-z]/g, "").replace(/[\u2800-\u28ff]+/g, "");
             const parts = buf.split(/\r?\n/); buf = parts.pop(); termPartial = buf;
             for (const p of parts) { const s = p.replace(/\r/g, "").trimEnd(); if (s) { termOut.push(s); if (termOut.length > 400) termOut.shift(); } }
           }
@@ -492,11 +504,15 @@ function activate(context) {
   if (resume && resume.file && fs.existsSync(resume.file) && Date.now() - (resume.at || 0) < 120000) {
     ws = resume.ws; srcRoot = resume.srcRoot;
     log(`resuming ${path.basename(resume.file)} at step ${resume.step + 1}`);
-    setTimeout(() => runTake(resume.file, resume.step), 4000);
+    setTimeout(() => {
+      log("resume: starting now");
+      runTake(resume.file, resume.step).catch((e) => log(`✖ resume failed: ${e && e.stack || e}`));
+    }, 4000);
   }
   log(`extension ready (VS Code ${vscode.version})`);
   writeStatus();
 }
 
-function deactivate() {}
+process.on && process.on("unhandledRejection", (e) => { try { log(`✖ unhandled: ${e && e.stack || e}`); } catch (x) {} });
+function deactivate() { try { log("extension stopped (window closing or reloading)"); } catch (e) {} }
 module.exports = { activate, deactivate };
