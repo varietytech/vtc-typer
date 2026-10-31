@@ -2,7 +2,7 @@
   "name": "vtc-typer",
   "displayName": "Variety Tech Typer",
   "description": "Types tutorial code into the editor like a person, runs terminal commands, and reports everything to a live folder for review.",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "publisher": "variety-tech",
   "license": "MIT",
   "engines": {

@@ -369,6 +369,10 @@ async function cmdSetLine(anchor, content) {
 
 // write a chapter snapshot into the workspace: files in it are written, files only in other chapters are removed
 async function cmdRestore(name) {
+  for (const d of vscode.workspace.textDocuments.filter((x) => x.isDirty && !x.isUntitled)) {
+    try { await vscode.window.showTextDocument(d, { preview: false }); await vscode.commands.executeCommand("workbench.action.files.revert"); log(`reverted unsaved ${path.basename(d.uri.fsPath)}`); }
+    catch (e) { log(`could not revert ${d.uri.fsPath}: ${e.message}`); }
+  }
   await vscode.commands.executeCommand("workbench.action.closeAllEditors");
   const root = path.join(srcRoot, name);
   if (!fs.existsSync(root)) throw new Error(`no snapshot folder ${root}`);
@@ -422,123 +426,46 @@ async function obsRequest(requestType) {
   });
 }
 
+async function waitRecording(active, seconds) {
+  const t0 = Date.now();
+  for (;;) {
+    const st = await obsRequest("GetRecordStatus");
+    if (!!st.outputActive === active) return true;
+    if (Date.now() - t0 > seconds * 1000) return false;
+    await sleepRaw(500);
+  }
+}
+
 async function cmdRecord(what) {
   const type = { start: "StartRecord", stop: "StopRecord", status: "GetRecordStatus" }[what];
   if (!type) throw new Error(`record start|stop|status, not "${what}"`);
   try {
-    if (what === "start") { const s = await obsRequest("GetRecordStatus"); if (s.outputActive) { log("OBS already recording"); return; } }
+    if (what === "start") {
+      // OBS may still be saving the previous file: wait for it instead of skipping the start
+      if (!(await waitRecording(false, 60))) throw new Error("OBS was still recording 60 s later; stop it by hand");
+      try { await vscode.commands.executeCommand("notifications.clearAll"); } catch (e) {}
+      await statusBar(false);
+      await sleepRaw(400);
+      await obsRequest("StartRecord");
+      if (!(await waitRecording(true, 15))) throw new Error("OBS did not start recording");
+      log("OBS start");
+      writeStatus({ obs: { recording: true } });
+      await sleep(1.5);                                // a beat of still frame before typing
+      return;
+    }
     const r = await obsRequest(type);
-    log(`OBS ${what}${r.outputPath ? ` → ${r.outputPath}` : ""}`);
-    writeStatus({ obs: { [what]: true, outputPath: r.outputPath } });
-    if (what === "start") { await statusBar(false); await sleep(1.5); }   // a beat of still frame before typing
-    if (what === "stop") await statusBar(true);
+    if (what === "stop") {
+      const done = await waitRecording(false, 120);    // wait until the file is fully written
+      log(`OBS stop${r.outputPath ? ` → ${r.outputPath}` : ""}${done ? "" : " (still saving after 120 s)"}`);
+      await statusBar(true);
+      writeStatus({ obs: { recording: false, outputPath: r.outputPath } });
+      return;
+    }
+    log(`OBS status: ${JSON.stringify(r)}`);
   } catch (e) {
     if (what === "stop") { log(`⚠️ ${e.message}`); await statusBar(true); return; }  // never lose the take over a stop
     throw e;
   }
-}
-
-// ------------------------------------------------------------------ terminal
-let term = null;
-function getTerm() {
-  if (term && vscode.window.terminals.includes(term)) return term;
-  term = vscode.window.createTerminal({ name: "VTC", cwd: ws });
-  return term;
-}
-
-async function waitShellIntegration(t, ms = 8000) {
-  const t0 = Date.now();
-  while (!t.shellIntegration && Date.now() - t0 < ms) await sleepRaw(200);
-  return !!t.shellIntegration;
-}
-
-async function cmdTerminal(cmd, typeIt = true) {
-  const t = getTerm();
-  t.show(false);
-  if (!(await waitShellIntegration(t))) log("⚠️ terminal shell integration is not active: waitdone/waitout can't see output");
-  await sleep(0.6);
-  log(`terminal> ${cmd}`);
-  state.execMark = execs.length;
-  if (typeIt) {
-    let prev = "";
-    for (const c of cmd) { await sleep(keyDelay(c, prev)); t.sendText(c, false); prev = c; }
-    await sleep(0.4);
-  } else {
-    t.sendText(cmd, false);
-  }
-  t.sendText("", true);                                 // Enter
-  await sleep(0.8);
-}
-
-async function cmdWaitDone(arg = "") {
-  const ignore = /ignore/.test(arg);
-  const timeout = parseFloat(arg) || 1200;
-  // wait for the last terminal command to finish (shell integration), logs its exit code
-  const t0 = Date.now();
-  state.label = "waiting for the command to finish";
-  writeStatus();
-  while (Date.now() - t0 < timeout * 1000) {
-    const mine = execs.slice(state.execMark || 0);
-    if (!mine.length && Date.now() - t0 > 30000) { log("no command start seen after 30s (shell integration off?) — moving on"); return; }
-    const last = mine[mine.length - 1];
-    if (last && last.done) {
-      log(`command finished: exit ${last.exit}`);
-      if (last.exit && last.exit !== 0 && !ignore) {
-        const tail = termOut.slice(-12);
-        for (const l of tail) log(`   | ${l}`);
-        throw new Error(`"${last.cmd}" failed (exit ${last.exit}). Last output:\n${tail.join("\n")}`);
-      }
-      return;
-    }
-    await sleep(0.5);
-  }
-  log("gave up waiting for the command");
-}
-
-async function cmdWaitOut(text, timeout = 300) {
-  const t0 = Date.now();
-  state.label = `waiting for "${text}"`;
-  writeStatus();
-  const mark = termOut.length;
-  while (Date.now() - t0 < timeout * 1000) {
-    if (termOut.slice(Math.max(0, mark - 5)).some((l) => l.includes(text)) || termPartial.includes(text)) { log(`saw "${text}"`); return; }
-    const failed = execs.slice(state.execMark || 0).find((r) => r.done && r.exit && r.exit !== 0);
-    if (failed) {
-      const tail = termOut.slice(-12);
-      for (const l of tail) log(`   | ${l}`);
-      throw new Error(`"${failed.cmd}" failed (exit ${failed.exit}) before "${text}" showed. Last output:\n${tail.join("\n")}`);
-    }
-    await sleep(0.5);
-  }
-  throw new Error(`did not see "${text}" within ${timeout}s`);
-}
-
-async function cmdWaitFor(arg) {
-  const [rel, to] = arg.split(/\s+/);
-  const f = path.join(ws, rel);
-  const t0 = Date.now(), timeout = (parseFloat(to) || 900) * 1000;
-  state.label = `waiting for ${rel}`;
-  writeStatus();
-  while (!fs.existsSync(f) && Date.now() - t0 < timeout) await sleep(0.5);
-}
-
-// ------------------------------------------------------------------ recording look for new projects
-const LOOK = {
-  "editor.fontSize": 17, "editor.lineHeight": 1.5, "editor.wordWrap": "on", "editor.minimap.enabled": false,
-  "editor.stickyScroll.enabled": false, "editor.hover.enabled": false, "editor.cursorBlinking": "smooth",
-  "editor.cursorSmoothCaretAnimation": "on", "editor.smoothScrolling": true, "editor.tabSize": 2,
-  "editor.formatOnSave": false, "editor.codeActionsOnSave": {}, "terminal.integrated.fontSize": 15,
-  "workbench.colorTheme": "Default Dark Modern", "workbench.startupEditor": "none", "workbench.tips.enabled": false,
-  "github.copilot.enable": { "*": false }, "chat.disableAIFeatures": true,
-};
-function writeLook(folder) {
-  try {
-    const dir = path.join(folder, ".vscode"), f = path.join(dir, "settings.json");
-    fs.mkdirSync(dir, { recursive: true });
-    let cur = {};
-    try { cur = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) {}
-    fs.writeFileSync(f, JSON.stringify({ ...cur, ...LOOK }, null, 2));
-  } catch (e) { log(`could not write recording settings: ${e.message}`); }
 }
 
 // ------------------------------------------------------------------ take runner

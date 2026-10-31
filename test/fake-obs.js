@@ -2,7 +2,8 @@
 const http = require("http"), crypto = require("crypto");
 module.exports = function fakeObs(port, password) {
   const log = [];
-  let recording = false;
+  let recording = false, savingUntil = 0;
+  const active = () => recording || Date.now() < savingUntil;
   const sha = (s) => crypto.createHash("sha256").update(s).digest("base64");
   const srv = http.createServer();
   srv.on("upgrade", (req, sock) => {
@@ -28,14 +29,14 @@ module.exports = function fakeObs(port, password) {
         } else if (m.op === 6) {
           const t = m.d.requestType; log.push(t);
           let data = {}, ok = true;
-          if (t === "GetRecordStatus") data = { outputActive: recording };
-          else if (t === "StartRecord") { ok = !recording; recording = true; }
-          else if (t === "StopRecord") { ok = recording; recording = false; data = { outputPath: "C:/rec/take.mp4" }; }
+          if (t === "GetRecordStatus") data = { outputActive: active() };
+          else if (t === "StartRecord") { ok = !active(); if (ok) recording = true; else log.push("start while saving"); }
+          else if (t === "StopRecord") { ok = recording; recording = false; savingUntil = Date.now() + 4000; data = { outputPath: "C:/rec/take.mp4" }; }
           send({ op: 7, d: { requestType: t, requestId: m.d.requestId, requestStatus: { result: ok, code: ok ? 100 : 500 }, responseData: data } });
         }
       }
     });
     sock.on("error", () => {});
   });
-  return new Promise((r) => srv.listen(port, "127.0.0.1", () => r({ log, close: () => srv.close(), get recording() { return recording; } })));
+  return new Promise((r) => srv.listen(port, "127.0.0.1", () => r({ log, close: () => srv.close(), get recording() { return active(); } })));
 };
