@@ -46,3 +46,10 @@ One command per line, `#` for comments.
 
 ## Settings
 `vtc.channelFolder`, `vtc.srcRoot`, `vtc.speed` (1.0 = about 6–7 characters a second), `vtc.typos`.
+
+## Tests
+    node test/run-tests.js
+
+Runs the extension against a small fake of the VS Code API: typing, paste and clear reproduce a reference
+file exactly, terminal commands are typed and run, read-only requests are answered, and a take resumes
+after `openfolder` reloads the window.
