@@ -49,6 +49,7 @@ One command per line, `#` for comments.
 
 ## Tests
     node test/run-tests.js
+    node test/prompt-test.js
 
 Runs the extension against a small fake of the VS Code API: typing, paste and clear reproduce a reference
 file exactly, terminal commands are typed and run, read-only requests are answered, and a take resumes

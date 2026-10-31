@@ -9,6 +9,7 @@ let ctx;
 let state = { running: false, paused: false, stop: false, take: null, step: 0, total: 0, label: "" };
 let sbPlay, sbPause, sbStop, sbInfo;
 const termOut = [];                 // last terminal output lines (ring buffer)
+let termPartial = "";               // current unfinished line (prompts like "(Y/n): " have no newline)
 const execs = [];                   // recent executions: {cmd, exit, done}
 let ws = null;                      // current workspace root (absolute)
 let srcRoot = null;
@@ -291,7 +292,7 @@ async function waitShellIntegration(t, ms = 8000) {
 async function cmdTerminal(cmd, typeIt = true) {
   const t = getTerm();
   t.show(false);
-  await waitShellIntegration(t);
+  if (!(await waitShellIntegration(t))) log("⚠️ terminal shell integration is not active: waitdone/waitout can't see output");
   await sleep(0.6);
   log(`terminal> ${cmd}`);
   state.execMark = execs.length;
@@ -313,6 +314,7 @@ async function cmdWaitDone(timeout = 900) {
   writeStatus();
   while (Date.now() - t0 < timeout * 1000) {
     const mine = execs.slice(state.execMark || 0);
+    if (!mine.length && Date.now() - t0 > 30000) { log("no command start seen after 30s (shell integration off?) — moving on"); return; }
     const last = mine[mine.length - 1];
     if (last && last.done) { log(`command finished: exit ${last.exit}`); return; }
     await sleep(0.5);
@@ -326,7 +328,7 @@ async function cmdWaitOut(text, timeout = 300) {
   writeStatus();
   const mark = termOut.length;
   while (Date.now() - t0 < timeout * 1000) {
-    if (termOut.slice(Math.max(0, mark - 5)).some((l) => l.includes(text))) { log(`saw "${text}"`); return; }
+    if (termOut.slice(Math.max(0, mark - 5)).some((l) => l.includes(text)) || termPartial.includes(text)) { log(`saw "${text}"`); return; }
     await sleep(0.5);
   }
   log(`did not see "${text}"`);
@@ -339,6 +341,25 @@ async function cmdWaitFor(arg) {
   state.label = `waiting for ${rel}`;
   writeStatus();
   while (!fs.existsSync(f) && Date.now() - t0 < timeout) await sleep(0.5);
+}
+
+// ------------------------------------------------------------------ recording look for new projects
+const LOOK = {
+  "editor.fontSize": 17, "editor.lineHeight": 1.5, "editor.wordWrap": "on", "editor.minimap.enabled": false,
+  "editor.stickyScroll.enabled": false, "editor.hover.enabled": false, "editor.cursorBlinking": "smooth",
+  "editor.cursorSmoothCaretAnimation": "on", "editor.smoothScrolling": true, "editor.tabSize": 2,
+  "editor.formatOnSave": false, "editor.codeActionsOnSave": {}, "terminal.integrated.fontSize": 15,
+  "workbench.colorTheme": "Default Dark Modern", "workbench.startupEditor": "none", "workbench.tips.enabled": false,
+  "github.copilot.enable": { "*": false }, "chat.disableAIFeatures": true,
+};
+function writeLook(folder) {
+  try {
+    const dir = path.join(folder, ".vscode"), f = path.join(dir, "settings.json");
+    fs.mkdirSync(dir, { recursive: true });
+    let cur = {};
+    try { cur = JSON.parse(fs.readFileSync(f, "utf8")); } catch (e) {}
+    fs.writeFileSync(f, JSON.stringify({ ...cur, ...LOOK }, null, 2));
+  } catch (e) { log(`could not write recording settings: ${e.message}`); }
 }
 
 // ------------------------------------------------------------------ take runner
@@ -389,6 +410,7 @@ async function runTake(file, startAt = 0) {
         case "openfolder": {
           await ctx.globalState.update("vtc.resume", { file, step: i + 1, ws, srcRoot, at: Date.now() });
           reloading = true;
+          writeLook(ws);
           log(`open folder ${ws} (window reloads, take continues)`);
           await vscode.commands.executeCommand("vscode.openFolder", vscode.Uri.file(ws), false);
           return;                                         // extension restarts in the new window and resumes
@@ -445,7 +467,7 @@ function activate(context) {
           let buf = "";
           for await (const chunk of ev.execution.read()) {
             buf += chunk.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/\x1b\][^\x07]*\x07/g, "");
-            const parts = buf.split(/\r?\n/); buf = parts.pop();
+            const parts = buf.split(/\r?\n/); buf = parts.pop(); termPartial = buf;
             for (const p of parts) { const s = p.replace(/\r/g, "").trimEnd(); if (s) { termOut.push(s); if (termOut.length > 400) termOut.shift(); } }
           }
           if (buf.trim()) termOut.push(buf.trim());

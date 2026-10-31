@@ -2,19 +2,37 @@
   "name": "vtc-typer",
   "displayName": "Variety Tech Typer",
   "description": "Types tutorial code into the editor like a person, runs terminal commands, and reports everything to a live folder for review.",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "publisher": "variety-tech",
   "license": "MIT",
-  "engines": { "vscode": "^1.93.0" },
-  "categories": ["Other"],
-  "activationEvents": ["onStartupFinished"],
+  "engines": {
+    "vscode": "^1.93.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./extension.js",
   "contributes": {
     "commands": [
-      { "command": "vtc.play", "title": "VTC: Play take" },
-      { "command": "vtc.pause", "title": "VTC: Pause / resume" },
-      { "command": "vtc.stop", "title": "VTC: Stop" },
-      { "command": "vtc.snapshot", "title": "VTC: Report snapshot now" }
+      {
+        "command": "vtc.play",
+        "title": "VTC: Play take"
+      },
+      {
+        "command": "vtc.pause",
+        "title": "VTC: Pause / resume"
+      },
+      {
+        "command": "vtc.stop",
+        "title": "VTC: Stop"
+      },
+      {
+        "command": "vtc.snapshot",
+        "title": "VTC: Report snapshot now"
+      }
     ],
     "configuration": {
       "title": "Variety Tech Typer",
@@ -29,8 +47,16 @@
           "default": "C:\\Users\\Benjamin\\MobileApps\\AllDocApp",
           "description": "Where reference code comes from (type/paste paths are relative to this)."
         },
-        "vtc.speed": { "type": "number", "default": 1.0, "description": "1.0 normal, 0.8 slower, 1.2 faster." },
-        "vtc.typos": { "type": "number", "default": 0.01, "description": "Chance of a corrected typo per letter." }
+        "vtc.speed": {
+          "type": "number",
+          "default": 1.0,
+          "description": "1.0 normal, 0.8 slower, 1.2 faster."
+        },
+        "vtc.typos": {
+          "type": "number",
+          "default": 0.01,
+          "description": "Chance of a corrected typo per letter."
+        }
       }
     }
   }
