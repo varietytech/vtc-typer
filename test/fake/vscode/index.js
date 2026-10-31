@@ -13,7 +13,7 @@ class Editor { constructor(d){this.document=d; this.selection=new Selection(0,0,
 const docs=[]; const editors=[];
 const os=require("os"), path=require("path");
 const T=process.env.VTC_TEST_DIR||path.join(os.tmpdir(),"vtc-test");
-const cfgVals={channelFolder:path.join(T,"channel"), srcRoot:path.join(T,"src"), speed:200, typos:0.02};
+const cfgVals={channelFolder:path.join(T,"channel"), srcRoot:path.join(T,"src"), speed:+(process.env.VTC_SPEED||200), typos:0.02, obsPort:+(process.env.VTC_OBS_PORT||4455), obsPassword:process.env.VTC_OBS_PASSWORD||""};
 module.exports = {
   Position, Range, Selection, version:"mock",
   StatusBarAlignment:{Left:1}, ThemeColor: class{}, TextEditorRevealType:{InCenterIfOutsideViewport:1},
@@ -25,6 +25,7 @@ module.exports = {
     terminals:[], createTerminal:(o)=>{ const t={name:o.name, shellIntegration:{}, show(){}, sendText(s,nl){ module.exports._term += s + (nl?"\n":""); }}; module.exports.window.terminals.push(t); return t; },
     showInformationMessage(m){console.log("INFO:",m);}, showErrorMessage(m){console.log("ERROR:",m);}, showWarningMessage(m){console.log("WARN:",m);}, setStatusBarMessage(){}, showQuickPick: async(x)=>x[0] },
   languages:{ getDiagnostics:(u)=> u? [] : [] },
-  commands:{ registerCommand:()=>({dispose(){}}), executeCommand: async()=>{} },
+  commands:{ registerCommand:()=>({dispose(){}}), executeCommand: async(c)=>{ if(c==="workbench.action.closeAllEditors"){docs.length=0; editors.length=0;} } },
+  _closeAll(){docs.length=0; editors.length=0;},
   _term:""
 };

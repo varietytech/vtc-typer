@@ -219,18 +219,7 @@ async function cmdType(lines) {
       ind -= n;
       await sleep(rnd(0.06, 0.12));
     }
-    let prev = "";
-    for (const c of body) {
-      if (/[a-z]/i.test(c) && /[a-z]/i.test(prev) && Math.random() < cfg().get("typos")) {
-        await insertAt(current, "qwertyuiopasdfghjklzxcvbnm"[Math.floor(Math.random() * 26)]);
-        await sleep(rnd(0.2, 0.45));
-        await backspace(current);
-        await sleep(rnd(0.1, 0.2));
-      }
-      await sleep(keyDelay(c, prev));
-      await insertAt(current, c);
-      prev = c;
-    }
+    await typeChars(body);
   }
   await sleep(rnd(0.5, 1.0));
 }
@@ -273,6 +262,179 @@ async function cmdCheck(spec) {
   const ok = got === want;
   log(ok ? `check ✅ ${path.basename(current)} matches ${spec}` : `check ⚠️ ${path.basename(current)} differs from ${spec}`);
   writeStatus({ lastCheck: { file: current, spec, match: ok } });
+}
+
+// type a string on the current line, character by character
+async function typeChars(text) {
+  let prev = "";
+  for (const c of text) {
+    if (/[a-z]/i.test(c) && /[a-z]/i.test(prev) && Math.random() < cfg().get("typos")) {
+      await insertAt(current, "qwertyuiopasdfghjklzxcvbnm"[Math.floor(Math.random() * 26)]);
+      await sleep(rnd(0.2, 0.45));
+      await backspace(current);
+      await sleep(rnd(0.1, 0.2));
+    }
+    await sleep(keyDelay(c, prev));
+    await insertAt(current, c);
+    prev = c;
+  }
+}
+
+function jsonArg(s) { try { return JSON.parse(s); } catch (e) { return s.replace(/^"|"$/g, ""); } }
+// split  "a b" "c"  /  12 "x"  into tokens (JSON strings stay whole)
+function tokens(arg) { return (arg.match(/"(?:[^"\\]|\\.)*"|\S+/g) || []).map(jsonArg); }
+
+function findLine(doc, anchor, from = 0) {
+  for (let i = from; i < doc.lineCount; i++) if (doc.lineAt(i).text.includes(anchor)) return i;
+  throw new Error(`no line containing ${JSON.stringify(anchor)} in ${path.basename(doc.uri.fsPath)}`);
+}
+
+async function place(e, line, ch) {
+  const p = new vscode.Position(line, ch);
+  e.selection = new vscode.Selection(p, p);
+  e.revealRange(new vscode.Range(p, p), vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  await sleep(0.5);
+}
+
+// new empty line that becomes line N (old line N moves down); cursor goes there
+async function cmdInsert(n) {
+  const e = await editorFor(current);
+  const doc = e.document;
+  if (n - 1 < doc.lineCount) {
+    await place(e, n - 1, 0);
+    await e.edit((b) => b.insert(new vscode.Position(n - 1, 0), "\n"), { undoStopBefore: false, undoStopAfter: false });
+    await place(e, n - 1, 0);
+  } else {
+    const last = doc.lineAt(doc.lineCount - 1);
+    await place(e, last.lineNumber ?? doc.lineCount - 1, last.text.length);
+    await insertAt(current, "\n");
+  }
+}
+
+// select lines a..b so the viewer sees them, then delete them
+async function cmdDeleteLines(spec) {
+  const [a, b] = spec.split("-").map((x) => parseInt(x, 10));
+  const e = await editorFor(current);
+  const doc = e.document;
+  let r;
+  if (b < doc.lineCount) r = new vscode.Range(a - 1, 0, b, 0);
+  else if (a > 1) r = new vscode.Range(a - 2, doc.lineAt(a - 2).text.length, b - 1, doc.lineAt(b - 1).text.length);
+  else r = new vscode.Range(0, 0, b - 1, doc.lineAt(b - 1).text.length);
+  e.selection = new vscode.Selection(r.start, r.end);
+  e.revealRange(r, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+  await sleep(0.9);
+  await e.edit((x) => x.delete(r), { undoStopBefore: false, undoStopAfter: false });
+  e.selection = new vscode.Selection(r.start, r.start);
+  log(`deleted lines ${spec}`);
+  await sleep(0.5);
+}
+
+// replace characters c1..c2 (0-based, end exclusive) of line N with text, typed
+async function cmdSplice(n, c1, c2, text) {
+  const e = await editorFor(current);
+  const line = n - 1;
+  if (c2 > c1) {
+    const r = new vscode.Range(line, c1, line, c2);
+    e.selection = new vscode.Selection(r.start, r.end);
+    e.revealRange(r, vscode.TextEditorRevealType.InCenterIfOutsideViewport);
+    await sleep(0.8);
+    await e.edit((x) => x.delete(r), { undoStopBefore: false, undoStopAfter: false });
+  }
+  await place(e, line, c1);
+  await typeChars(text);
+  await sleep(rnd(0.4, 0.8));
+}
+
+// cursor to the end of the first line containing anchor
+async function cmdAfter(anchor) {
+  const e = await editorFor(current);
+  const i = findLine(e.document, anchor);
+  await place(e, i, e.document.lineAt(i).text.length);
+}
+
+// new empty line above the first line containing anchor; cursor goes there
+async function cmdAbove(anchor) {
+  const e = await editorFor(current);
+  await cmdInsert(findLine(e.document, anchor) + 1);
+}
+
+// retype the first line containing anchor (keeps its indentation)
+async function cmdSetLine(anchor, content) {
+  const e = await editorFor(current);
+  const i = findLine(e.document, anchor);
+  const t = e.document.lineAt(i).text;
+  const ind = t.length - t.trimStart().length;
+  await cmdSplice(i + 1, ind, t.length, content.trimStart());
+}
+
+// write a chapter snapshot into the workspace: files in it are written, files only in other chapters are removed
+async function cmdRestore(name) {
+  await vscode.commands.executeCommand("workbench.action.closeAllEditors");
+  const root = path.join(srcRoot, name);
+  if (!fs.existsSync(root)) throw new Error(`no snapshot folder ${root}`);
+  const walk = (d, base = d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((x) =>
+    x.isDirectory() ? walk(path.join(d, x.name), base) : [path.relative(base, path.join(d, x.name))]);
+  const all = new Set();
+  for (const ch of fs.readdirSync(srcRoot, { withFileTypes: true }).filter((x) => x.isDirectory()))
+    walk(path.join(srcRoot, ch.name)).forEach((f) => all.add(f));
+  const mine = new Set(walk(root));
+  for (const f of all) {
+    const dest = path.join(ws, f);
+    if (mine.has(f)) { fs.mkdirSync(path.dirname(dest), { recursive: true }); fs.copyFileSync(path.join(root, f), dest); }
+    else if (fs.existsSync(dest)) fs.unlinkSync(dest);
+  }
+  // remove folders left empty (e.g. src/app/scan)
+  const prune = (d) => { if (!fs.existsSync(d)) return; for (const x of fs.readdirSync(d, { withFileTypes: true })) if (x.isDirectory()) prune(path.join(d, x.name));
+    if (d !== ws && !fs.readdirSync(d).length && [...all].some((f) => path.join(ws, f).startsWith(d + path.sep))) fs.rmdirSync(d); };
+  prune(path.join(ws, "src"));
+  current = null;
+  log(`restore ${name}: ${mine.size} files written`);
+  await sleep(1.0);
+}
+
+// ------------------------------------------------------------------ OBS (obs-websocket v5, built into OBS 28+)
+async function obsRequest(requestType) {
+  if (typeof WebSocket === "undefined") throw new Error("this VS Code has no WebSocket; start/stop OBS by hand");
+  const crypto = require("crypto");
+  const sha = (s) => crypto.createHash("sha256").update(s).digest("base64");
+  // settings win; otherwise <channel>/tools/obs-websocket.json = {"port": 4455, "password": "..."}
+  let file = {};
+  try { file = JSON.parse(fs.readFileSync(path.join(channel(), "tools", "obs-websocket.json"), "utf8")); } catch (e) {}
+  const port = cfg().get("obsPort") || file.port || 4455, password = cfg().get("obsPassword") || file.password || "";
+  return new Promise((resolve, reject) => {
+    const sock = new WebSocket(`ws://127.0.0.1:${port}`);
+    const done = (err, v) => { clearTimeout(timer); try { sock.close(); } catch (e) {} err ? reject(err) : resolve(v); };
+    const timer = setTimeout(() => done(new Error(`OBS did not answer on port ${port} (is the WebSocket server on?)`)), 6000);
+    sock.onerror = () => done(new Error(`could not reach OBS on port ${port} (Tools → WebSocket Server Settings)`));
+    sock.onmessage = (ev) => {
+      const m = JSON.parse(typeof ev.data === "string" ? ev.data : Buffer.from(ev.data).toString());
+      if (m.op === 0) {
+        const d = { rpcVersion: 1 };
+        if (m.d.authentication) d.authentication = sha(sha(password + m.d.authentication.salt) + m.d.authentication.challenge);
+        sock.send(JSON.stringify({ op: 1, d }));
+      } else if (m.op === 2) {
+        sock.send(JSON.stringify({ op: 6, d: { requestType, requestId: "vtc" } }));
+      } else if (m.op === 7) {
+        const st = m.d.requestStatus || {};
+        st.result ? done(null, m.d.responseData || {}) : done(new Error(`OBS ${requestType}: ${st.comment || st.code}`));
+      }
+    };
+  });
+}
+
+async function cmdRecord(what) {
+  const type = { start: "StartRecord", stop: "StopRecord", status: "GetRecordStatus" }[what];
+  if (!type) throw new Error(`record start|stop|status, not "${what}"`);
+  try {
+    if (what === "start") { const s = await obsRequest("GetRecordStatus"); if (s.outputActive) { log("OBS already recording"); return; } }
+    const r = await obsRequest(type);
+    log(`OBS ${what}${r.outputPath ? ` → ${r.outputPath}` : ""}`);
+    writeStatus({ obs: { [what]: true, outputPath: r.outputPath } });
+    if (what === "start") await sleep(1.5);           // a beat of still frame before typing
+  } catch (e) {
+    if (what === "stop") { log(`⚠️ ${e.message}`); return; }  // never lose the take over a stop
+    throw e;
+  }
 }
 
 // ------------------------------------------------------------------ terminal
@@ -339,9 +501,15 @@ async function cmdWaitOut(text, timeout = 300) {
   const mark = termOut.length;
   while (Date.now() - t0 < timeout * 1000) {
     if (termOut.slice(Math.max(0, mark - 5)).some((l) => l.includes(text)) || termPartial.includes(text)) { log(`saw "${text}"`); return; }
+    const failed = execs.slice(state.execMark || 0).find((r) => r.done && r.exit && r.exit !== 0);
+    if (failed) {
+      const tail = termOut.slice(-12);
+      for (const l of tail) log(`   | ${l}`);
+      throw new Error(`"${failed.cmd}" failed (exit ${failed.exit}) before "${text}" showed. Last output:\n${tail.join("\n")}`);
+    }
     await sleep(0.5);
   }
-  log(`did not see "${text}"`);
+  throw new Error(`did not see "${text}" within ${timeout}s`);
 }
 
 async function cmdWaitFor(arg) {
@@ -402,14 +570,24 @@ async function runTake(file, startAt = 0) {
         case "goto": await cmdGoto(arg); break;
         case "type": await cmdType(readSource(arg)); break;
         case "paste": await cmdPaste(readSource(arg)); break;
-        case "text": await cmdType(arg.replace(/\\n/g, "\n").split("\n")); break;
+        case "text": { const v = arg.startsWith('"') ? String(jsonArg(arg)) : arg.replace(/\\n/g, "\n"); await cmdType(v.split("\n")); break; }
         case "clear": await cmdClear(); break;
         case "save": await cmdSave(); break;
         case "check": await cmdCheck(arg); break;
         case "terminal": await cmdTerminal(arg, true); break;
         case "run": await cmdTerminal(arg, false); break;
         case "waitdone": await cmdWaitDone(arg); break;
-        case "waitout": await cmdWaitOut(arg.replace(/^"|"$/g, "")); break;
+        case "waitout": { const t = tokens(arg); await cmdWaitOut(String(t[0]), parseFloat(t[1]) || 300); break; }
+        case "insert": await cmdInsert(parseInt(arg, 10)); break;
+        case "deletelines": await cmdDeleteLines(arg); break;
+        case "splice": { const t = tokens(arg); await cmdSplice(+t[0], +t[1], +t[2], String(t[3] ?? "")); break; }
+        case "after": await cmdAfter(String(tokens(arg)[0])); break;
+        case "above": await cmdAbove(String(tokens(arg)[0])); break;
+        case "setline": { const t = tokens(arg); await cmdSetLine(String(t[0]), String(t[1])); break; }
+        case "newline": await insertAt(current, "\n"); break;
+        case "restore": await cmdRestore(arg); break;
+        case "closeall": await vscode.commands.executeCommand("workbench.action.closeAllEditors"); current = null; await sleep(0.6); break;
+        case "record": await cmdRecord(arg.trim()); break;
         case "waitfor": await cmdWaitFor(arg); break;
         case "wait": await sleep(parseFloat(arg)); break;
         case "note": log(`note: ${arg}`); vscode.window.setStatusBarMessage(`🗒 ${arg}`, 8000); break;
@@ -433,6 +611,7 @@ async function runTake(file, startAt = 0) {
     vscode.window.showInformationMessage(`Take finished: ${path.basename(file)}`);
   } catch (e) {
     if (e instanceof Stopped) log("■ stopped"); else { log(`✖ error: ${e.message}`); vscode.window.showErrorMessage(`VTC: ${e.message}`); }
+    if (cmds && cmds.some(([o, a]) => o === "record" && a.trim() === "start")) await cmdRecord("stop").catch(() => {});
   } finally {
     if (!reloading) await ctx.globalState.update("vtc.resume", undefined);
     state.running = false;

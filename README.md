@@ -22,7 +22,15 @@ One command per line, `#` for comments.
 | `open <path>` | create/open a file in the workspace |
 | `type <src-file> [a-b]` | type lines a–b of a reference file |
 | `paste <src-file> [a-b]` | paste a block |
-| `text <literal>` | type literal text (`\n` for new line) |
+| `text <literal>` / `text "<json string>"` | type literal text (`\n` for new line; quote it to keep leading spaces) |
+| `newline` | press Enter |
+| `insert <n>` | make a new empty line that becomes line n, cursor on it |
+| `deletelines <a-b>` | select lines a–b (visibly) and delete them |
+| `splice <n> <c1> <c2> "<text>"` | select characters c1–c2 of line n and type text instead |
+| `after "<anchor>"` / `above "<anchor>"` | cursor to the end of / a new line above the first line containing anchor |
+| `setline "<anchor>" "<content>"` | retype the first line containing anchor, keeping its indent |
+| `restore <chapter folder>` | write a chapter snapshot into the workspace (removes files from other chapters), closes editors |
+| `closeall` | close all editors |
 | `goto <line>` / `goto end` | move the cursor |
 | `clear` | delete everything in the open file |
 | `save` | save, then log TypeScript errors/warnings for the file |
@@ -30,7 +38,8 @@ One command per line, `#` for comments.
 | `terminal <cmd>` | type a command into the terminal and run it |
 | `run <cmd>` | run a command without the typing effect |
 | `waitdone [s]` | wait until the last terminal command finishes (logs the exit code) |
-| `waitout "<text>"` | wait until the terminal prints some text |
+| `waitout "<text>" [s]` | wait until the terminal prints some text; stops the take if the command fails or time runs out |
+| `record start` / `record stop` | start/stop OBS recording over obs-websocket (a failed take always stops it) |
 | `waitfor <path> [s]` | wait until a file or folder exists |
 | `wait <seconds>` | pause |
 | `pause [message]` | wait until you click Resume |
@@ -47,10 +56,17 @@ One command per line, `#` for comments.
 ## Settings
 `vtc.channelFolder`, `vtc.srcRoot`, `vtc.speed` (1.0 = about 6–7 characters a second), `vtc.typos`.
 
+## OBS
+
+Turn on OBS → Tools → WebSocket Server Settings. Put the port and password in
+`<channel>/tools/obs-websocket.json` as `{"port": 4455, "password": "..."}` (or the `vtc.obsPort` / `vtc.obsPassword` settings).
+
 ## Tests
     node test/run-tests.js
     node test/prompt-test.js
     node test/fail-test.js
+    node test/episode-test.js <episode folder> <src path used in takes>   # every chapter take, fake OBS included
+    node test/appjson-test.js <app.json> <chapter 1 take>
 
 Runs the extension against a small fake of the VS Code API: typing, paste and clear reproduce a reference
 file exactly, terminal commands are typed and run, read-only requests are answered, and a take resumes

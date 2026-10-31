@@ -2,7 +2,7 @@
   "name": "vtc-typer",
   "displayName": "Variety Tech Typer",
   "description": "Types tutorial code into the editor like a person, runs terminal commands, and reports everything to a live folder for review.",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "publisher": "variety-tech",
   "license": "MIT",
   "engines": {
@@ -56,6 +56,16 @@
           "type": "number",
           "default": 0.01,
           "description": "Chance of a corrected typo per letter."
+        },
+        "vtc.obsPort": {
+          "type": "number",
+          "default": 4455,
+          "description": "OBS WebSocket port (OBS \u2192 Tools \u2192 WebSocket Server Settings)."
+        },
+        "vtc.obsPassword": {
+          "type": "string",
+          "default": "",
+          "description": "OBS WebSocket password (empty if authentication is off)."
         }
       }
     }
